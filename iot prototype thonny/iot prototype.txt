@@ -1,0 +1,114 @@
+from machine import Pin, I2C, PWM
+import dht
+import ssd1306
+import time
+import network
+import urequests
+
+# Konfigurasi pin
+DHT_PIN = 4
+ALARM_PIN = 2
+FLAME_PIN = 5
+SERVO_PIN = 13
+
+# Inisialisasi komponen
+sensor = dht.DHT11(Pin(DHT_PIN))
+alarm = Pin(ALARM_PIN, Pin.OUT)
+flame = Pin(FLAME_PIN, Pin.IN)
+
+# Servo setup
+servo = PWM(Pin(SERVO_PIN), freq=50)
+def servo_angle(angle):
+    try:
+        min_duty = 1638
+        max_duty = 8192
+        duty = int(min_duty + (angle / 180) * (max_duty - min_duty))
+        servo.duty_u16(duty)
+    except Exception as e:
+        print("Servo error:", e)
+
+# OLED setup
+i2c = I2C(scl=Pin(22), sda=Pin(21))
+oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+
+oled.fill(0)
+oled.text("WELCOME", 0, 0)
+oled.text("ASAP squad", 0, 10)
+oled.text("FIRE DETECTOR", 0, 20)
+oled.show()
+time.sleep(2)
+
+# WiFi setup
+SSID = "drip"
+PASSWORD = "87654321"
+
+wlan = network.WLAN(network.STA_IF)
+wlan.active(True)
+wlan.connect(SSID, PASSWORD)
+
+print("Menyambungkan ke Wi-Fi...")
+while not wlan.isconnected():
+    print(".", end="")
+    time.sleep(1)
+print("\nTerhubung ke Wi-Fi!")
+print("IP:", wlan.ifconfig()[0])
+
+# Ubidots setup
+UBIDOTS_TOKEN = "BBUS-mSH4oKmM0924VFRa7q1a3PoHpIrqEo"
+DEVICE_LABEL = "araa"
+
+def send_to_ubidots(suhu, kelembaban):
+    url = f"http://industrial.api.ubidots.com/api/v1.6/devices/{DEVICE_LABEL}/"
+    headers = {
+        "X-Auth-Token": UBIDOTS_TOKEN,
+        "Content-Type": "application/json"
+    }
+    data = {
+        "suhu": suhu,
+        "kelembaban": kelembaban
+    }
+
+    try:
+        response = urequests.post(url, json=data, headers=headers)
+        print("Data dikirim:", response.text)
+        response.close()
+    except Exception as e:
+        print("Gagal kirim data:", e)
+
+# Loop utama
+while True:
+    try:
+        time.sleep(2)  # jeda agar DHT11 tidak timeout
+        sensor.measure()
+        suhu = sensor.temperature()
+        kelembaban = sensor.humidity()
+        flame_detected = flame.value() == 0  # 0 = ada api
+
+        print("Suhu:", suhu, "C | Kelembaban:", kelembaban, "% | Flame:", flame.value())
+
+        oled.fill(0)
+        oled.text("Suhu: {} C".format(suhu), 0, 0)
+        oled.text("Lembab: {} %".format(int(kelembaban)), 0, 15)
+
+        if suhu > 30 or flame_detected:
+            oled.text("!! BAHAYA API !!", 0, 40)
+            alarm.on()
+            servo_angle(90)
+            print("API TERDETEKSI! Servo buka 90°")
+        else:
+            oled.text("Status: Aman", 0, 40)
+            alarm.off()
+            servo_angle(0)
+            print("Aman. Servo tutup 0°")
+
+        oled.show()
+        send_to_ubidots(suhu, kelembaban)
+
+        time.sleep(5)
+
+    except OSError as e:
+        print("Sensor Error:", e)
+        oled.fill(0)
+        oled.text("Sensor Error", 0, 0)
+        oled.show()
+        time.sleep(2)
